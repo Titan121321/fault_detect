@@ -6,6 +6,7 @@
     <title>STM32 MPU6050 Machine Fault Detection Dashboard</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/4.3.7/mqtt.min.js"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -183,179 +184,64 @@
 
     <!-- JavaScript Application Logic -->
     <!-- JavaScript Application Logic (Updated for Web Serial API) -->
-    <script>
-        // --- State Variables ---
-        let port;
-        let reader;
-        let isConnected = false;
-        const maxPoints = 100; // Number of data points to show on screen
+   <!-- Add a button and an element to display the live data -->
+<button id="connectBtn">Connect STM32</button>
+<p>Live Reading: <span id="readingValue">0.00</span></p>
+
+<script>
+let reader;
+let port;
+
+document.getElementById('connectBtn').addEventListener('click', async () => {
+    try {
+        // 1. Request the user to select their STM32 COM port
+        port = await navigator.serial.requestPort();
         
-        // --- Chart Initialization (Converted to Rolling Time-Domain) ---
-        const labels = Array(maxPoints).fill('');
+        // 2. Open the port with the matching baud rate
+        await port.open({ baudRate: 115200 });
 
-        // Top Chart (Raw Magnitude)
-        const ctxNormal = document.getElementById('normalChart').getContext('2d');
-        const normalChart = new Chart(ctxNormal, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [{
-                    label: 'Raw Unfiltered Magnitude (g)',
-                    data: Array(maxPoints).fill(0),
-                    borderColor: '#38bdf8',
-                    borderWidth: 2.5,
-                    tension: 0.1,
-                    pointRadius: 0
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false, // Critical for lag-free real-time plotting
-                scales: {
-                    x: { title: { display: true, text: 'Time (Samples)', color: '#cbd5e1' } },
-                    y: { title: { display: true, text: 'Magnitude (g)', color: '#cbd5e1' }, min: 0, max: 2.0 }
-                },
-                plugins: { legend: { display: false } }
+        // 3. Set up a text decoder stream to read line by line
+        const textDecoder = new TextDecoderStream();
+        const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+        reader = textDecoder.readable.getReader();
+
+        // 4. Continuously read incoming data
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+                break; // Allow the stream to close cleanly later
             }
-        });
-
-        // Bottom Chart (Filtered Vibration & Faults)
-        const ctxFault = document.getElementById('faultChart').getContext('2d');
-        const faultChart = new Chart(ctxFault, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [
-                    {
-                        label: 'Filtered Vibration (g)',
-                        data: Array(maxPoints).fill(0),
-                        borderColor: '#10b981',
-                        borderWidth: 2.5,
-                        tension: 0.1,
-                        pointRadius: 0
-                    },
-                    {
-                        label: 'Impact Detected',
-                        data: Array(maxPoints).fill(null), // Only plots points when fault occurs
-                        backgroundColor: '#ef4444',
-                        borderColor: '#ef4444',
-                        pointStyle: 'crossRot',
-                        pointRadius: 8,
-                        showLine: false
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: false,
-                scales: {
-                    x: { title: { display: true, text: 'Time (Samples)', color: '#cbd5e1' } },
-                    y: { title: { display: true, text: 'Vibration Offset (g)', color: '#cbd5e1' }, min: -0.5, max: 0.5 }
-                },
-                plugins: { legend: { display: false } }
-            }
-        });
-
-        // --- Web Serial API Connection & Parsing ---
-        async function toggleConnection() {
-            if (isConnected) {
-                // Disconnect logic
-                if (reader) await reader.cancel();
-                if (port) await port.close();
-                updateUIState(false);
-                return;
-            }
-
-            try {
-                // Request COM port access
-                port = await navigator.serial.requestPort();
-                await port.open({ baudRate: 115200 }); // Must match STM32 UART rate
-                
-                updateUIState(true);
-
-                const textDecoder = new TextDecoderStream();
-                port.readable.pipeTo(textDecoder.writable);
-                reader = textDecoder.readable.getReader();
-
-                let buffer = "";
-
-                // Continuous Read Loop
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    
-                    buffer += value;
-                    let lines = buffer.split('\n');
-                    buffer = lines.pop(); // Keep incomplete fragment
-
-                    for (let line of lines) {
-                        line = line.trim();
-                        if (!line || line.startsWith('#')) continue; 
-                        
-                        let parts = line.split(',');
-                        if (parts.length >= 3) {
-                            let raw = parseFloat(parts[0]);
-                            let filtered = parseFloat(parts[1]);
-                            let impact = parseInt(parts[2]);
-                            
-                            updateDashboards(raw, filtered, impact);
-                        }
-                    }
-                }
-            } catch (err) {
-                console.error("Serial error:", err);
-                alert("Connection failed. Ensure no other apps (like VS Code) are using the COM port.");
-                updateUIState(false);
+            if (value) {
+                // 'value' is a string chunk. Let's split by lines if multiple arrive together.
+                processIncomingData(value);
             }
         }
+    } catch (error) {
+        console.error("Connection failed:", error);
+    }
+});
 
-        // --- Data Routing Logic ---
-        function updateDashboards(raw, filtered, impact) {
-            // 1. Update Top Chart (Raw Data)
-            normalChart.data.datasets[0].data.shift();
-            normalChart.data.datasets[0].data.push(raw);
-            normalChart.update('none');
+let buffer = "";
+function processIncomingData(chunk) {
+    buffer += chunk;
+    let lines = buffer.split('\n');
+    
+    // Keep the last partial line in the buffer
+    buffer = lines.pop(); 
 
-            // 2. Update Bottom Chart (Filtered + Faults)
-            faultChart.data.datasets[0].data.shift();
-            faultChart.data.datasets[0].data.push(filtered);
+    for (let line of lines) {
+        let cleanedLine = line.trim();
+        if (cleanedLine.length > 0) {
+            let numericValue = parseFloat(cleanedLine);
             
-            faultChart.data.datasets[1].data.shift();
-            // Plot an 'X' marker only if impact is 1
-            faultChart.data.datasets[1].data.push(impact === 1 ? filtered : null);
-            faultChart.update('none');
-
-            // 3. Update the left sidebar telemetry cards
-            document.getElementById('valX').innerText = raw.toFixed(3) + " g";
-            document.getElementById('valY').innerText = filtered.toFixed(3) + " g";
+            // Display on UI
+            document.getElementById('readingValue').innerText = numericValue;
             
-            const faultText = impact === 1 ? "FAULT DETECTED" : "Normal";
-            const faultColor = impact === 1 ? "text-red-500" : "text-emerald-400";
-            document.getElementById('valZ').innerText = faultText;
-            document.getElementById('valZ').className = `text-xs sm:text-sm font-bold font-mono mt-1 ${faultColor}`;
+            // TODO: Feed 'numericValue' directly into your graph (e.g., Chart.js / Recharts)
+            // updateGraph(numericValue);
         }
-
-        // --- UI Cosmetics ---
-        function updateUIState(connected) {
-            isConnected = connected;
-            const badge = document.getElementById('connectionBadge');
-            const text = document.getElementById('connectionText');
-            const btnText = document.getElementById('connectBtnText');
-            
-            if (connected) {
-                badge.className = "flex items-center space-x-2 px-3.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium";
-                badge.querySelector('span').className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
-                text.innerText = "STM32 Connected Live";
-                btnText.innerText = "Disconnect";
-            } else {
-                badge.className = "flex items-center space-x-2 px-3.5 py-1.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-medium";
-                badge.querySelector('span').className = "w-2 h-2 rounded-full bg-sky-400";
-                text.innerText = "Disconnected";
-                btnText.innerText = "Connect STM32";
-            }
-        }
-    </script>
+    }
+}
+</script>
 </body>
 </html>
