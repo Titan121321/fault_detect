@@ -182,94 +182,45 @@
     </main>
 
     <!-- JavaScript Application Logic -->
+    <!-- JavaScript Application Logic (Updated for Web Serial API) -->
     <script>
         // --- State Variables ---
+        let port;
+        let reader;
         let isConnected = false;
-        let isFaultActive = false;
-        let maxFrequency = 250;
-        let samplingRate = 250;
-        let chartPointsCount = 50;
-        let animationInterval = null;
+        const maxPoints = 100; // Number of data points to show on screen
+        
+        // --- Chart Initialization (Converted to Rolling Time-Domain) ---
+        const labels = Array(maxPoints).fill('');
 
-        // --- Chart Initialization ---
-        const labels = Array.from({length: chartPointsCount}, (_, i) => ((i / chartPointsCount) * maxFrequency).toFixed(1));
-
-        // Generate clean baseline frequency spectrum
-        function generateNormalSpectrum() {
-            return labels.map((freq, index) => {
-                let f = parseFloat(freq);
-                let val = 0.04 + Math.random() * 0.025;
-                if (Math.abs(f - 50) < 3) val += 0.88;
-                if (Math.abs(f - 100) < 3) val += 0.42;
-                if (Math.abs(f - 150) < 3) val += 0.22;
-                if (Math.abs(f - 200) < 3) val += 0.12;
-                return parseFloat(val.toFixed(3));
-            });
-        }
-
-        // Generate fault spectrum
-        function generateFaultSpectrum() {
-            return labels.map((freq, index) => {
-                let f = parseFloat(freq);
-                let val = 0.08 + Math.random() * 0.12;
-                if (Math.abs(f - 50) < 3) val += 0.92;
-                if (Math.abs(f - 100) < 3) val += 0.68;
-                if (Math.abs(f - 35) < 3) val += 0.58; 
-                if (Math.abs(f - 65) < 3) val += 0.52; 
-                if (Math.abs(f - 125) < 3) val += 0.48; 
-                if (Math.abs(f - 180) < 3) val += 0.42;
-                return parseFloat(val.toFixed(3));
-            });
-        }
-
-        // Top Chart (Normal Spectrum)
+        // Top Chart (Raw Magnitude)
         const ctxNormal = document.getElementById('normalChart').getContext('2d');
         const normalChart = new Chart(ctxNormal, {
             type: 'line',
             data: {
                 labels: labels,
                 datasets: [{
-                    label: 'Normal Baseline (g)',
-                    data: generateNormalSpectrum(),
+                    label: 'Raw Unfiltered Magnitude (g)',
+                    data: Array(maxPoints).fill(0),
                     borderColor: '#38bdf8',
-                    backgroundColor: function(context) {
-                        const chart = context.chart;
-                        const {ctx, chartArea} = chart;
-                        if (!chartArea) return null;
-                        const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-                        gradient.addColorStop(0, 'rgba(56, 189, 248, 0.25)');
-                        gradient.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
-                        return gradient;
-                    },
                     borderWidth: 2.5,
-                    fill: true,
-                    tension: 0.35,
+                    tension: 0.1,
                     pointRadius: 0
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                animation: false,
+                animation: false, // Critical for lag-free real-time plotting
                 scales: {
-                    x: {
-                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
-                        ticks: { color: '#94a3b8', font: { size: 10, family: 'Inter' } },
-                        title: { display: true, text: 'Frequency (Hz)', color: '#cbd5e1', font: { size: 11, weight: '500' } }
-                    },
-                    y: {
-                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
-                        ticks: { color: '#94a3b8', font: { size: 10, family: 'Inter' } },
-                        title: { display: true, text: 'Amplitude (g)', color: '#cbd5e1', font: { size: 11, weight: '500' } },
-                        min: 0,
-                        max: 1.2
-                    }
+                    x: { title: { display: true, text: 'Time (Samples)', color: '#cbd5e1' } },
+                    y: { title: { display: true, text: 'Magnitude (g)', color: '#cbd5e1' }, min: 0, max: 2.0 }
                 },
                 plugins: { legend: { display: false } }
             }
         });
 
-        // Bottom Chart (Fault Detection Spectrum)
+        // Bottom Chart (Filtered Vibration & Faults)
         const ctxFault = document.getElementById('faultChart').getContext('2d');
         const faultChart = new Chart(ctxFault, {
             type: 'line',
@@ -277,32 +228,21 @@
                 labels: labels,
                 datasets: [
                     {
-                        label: 'Normal Baseline',
-                        data: generateNormalSpectrum(),
-                        borderColor: '#38bdf8',
-                        borderWidth: 1.5,
-                        borderDash: [4, 4],
-                        fill: false,
-                        tension: 0.35,
+                        label: 'Filtered Vibration (g)',
+                        data: Array(maxPoints).fill(0),
+                        borderColor: '#10b981',
+                        borderWidth: 2.5,
+                        tension: 0.1,
                         pointRadius: 0
                     },
                     {
-                        label: 'Live Spectrum (Disturbance + Noise)',
-                        data: generateNormalSpectrum(),
-                        borderColor: '#10b981',
-                        backgroundColor: function(context) {
-                            const chart = context.chart;
-                            const {ctx, chartArea} = chart;
-                            if (!chartArea) return null;
-                            const gradient = ctx.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-                            gradient.addColorStop(0, 'rgba(16, 185, 129, 0.2)');
-                            gradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
-                            return gradient;
-                        },
-                        borderWidth: 2.5,
-                        fill: true,
-                        tension: 0.35,
-                        pointRadius: 0
+                        label: 'Impact Detected',
+                        data: Array(maxPoints).fill(null), // Only plots points when fault occurs
+                        backgroundColor: '#ef4444',
+                        borderColor: '#ef4444',
+                        pointStyle: 'crossRot',
+                        pointRadius: 8,
+                        showLine: false
                     }
                 ]
             },
@@ -311,79 +251,110 @@
                 maintainAspectRatio: false,
                 animation: false,
                 scales: {
-                    x: {
-                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
-                        ticks: { color: '#94a3b8', font: { size: 10, family: 'Inter' } },
-                        title: { display: true, text: 'Frequency (Hz)', color: '#cbd5e1', font: { size: 11, weight: '500' } }
-                    },
-                    y: {
-                        grid: { color: 'rgba(51, 65, 85, 0.4)' },
-                        ticks: { color: '#94a3b8', font: { size: 10, family: 'Inter' } },
-                        title: { display: true, text: 'Amplitude (g)', color: '#cbd5e1', font: { size: 11, weight: '500' } },
-                        min: 0,
-                        max: 1.4
-                    }
+                    x: { title: { display: true, text: 'Time (Samples)', color: '#cbd5e1' } },
+                    y: { title: { display: true, text: 'Vibration Offset (g)', color: '#cbd5e1' }, min: -0.5, max: 0.5 }
                 },
                 plugins: { legend: { display: false } }
             }
         });
 
-        // --- Interactive Controls & Simulation Logic ---
+        // --- Web Serial API Connection & Parsing ---
+        async function toggleConnection() {
+            if (isConnected) {
+                // Disconnect logic
+                if (reader) await reader.cancel();
+                if (port) await port.close();
+                updateUIState(false);
+                return;
+            }
 
-        function toggleConnection() {
-            isConnected = !isConnected;
+            try {
+                // Request COM port access
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 }); // Must match STM32 UART rate
+                
+                updateUIState(true);
+
+                const textDecoder = new TextDecoderStream();
+                port.readable.pipeTo(textDecoder.writable);
+                reader = textDecoder.readable.getReader();
+
+                let buffer = "";
+
+                // Continuous Read Loop
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += value;
+                    let lines = buffer.split('\n');
+                    buffer = lines.pop(); // Keep incomplete fragment
+
+                    for (let line of lines) {
+                        line = line.trim();
+                        if (!line || line.startsWith('#')) continue; 
+                        
+                        let parts = line.split(',');
+                        if (parts.length >= 3) {
+                            let raw = parseFloat(parts[0]);
+                            let filtered = parseFloat(parts[1]);
+                            let impact = parseInt(parts[2]);
+                            
+                            updateDashboards(raw, filtered, impact);
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error("Serial error:", err);
+                alert("Connection failed. Ensure no other apps (like VS Code) are using the COM port.");
+                updateUIState(false);
+            }
+        }
+
+        // --- Data Routing Logic ---
+        function updateDashboards(raw, filtered, impact) {
+            // 1. Update Top Chart (Raw Data)
+            normalChart.data.datasets[0].data.shift();
+            normalChart.data.datasets[0].data.push(raw);
+            normalChart.update('none');
+
+            // 2. Update Bottom Chart (Filtered + Faults)
+            faultChart.data.datasets[0].data.shift();
+            faultChart.data.datasets[0].data.push(filtered);
+            
+            faultChart.data.datasets[1].data.shift();
+            // Plot an 'X' marker only if impact is 1
+            faultChart.data.datasets[1].data.push(impact === 1 ? filtered : null);
+            faultChart.update('none');
+
+            // 3. Update the left sidebar telemetry cards
+            document.getElementById('valX').innerText = raw.toFixed(3) + " g";
+            document.getElementById('valY').innerText = filtered.toFixed(3) + " g";
+            
+            const faultText = impact === 1 ? "FAULT DETECTED" : "Normal";
+            const faultColor = impact === 1 ? "text-red-500" : "text-emerald-400";
+            document.getElementById('valZ').innerText = faultText;
+            document.getElementById('valZ').className = `text-xs sm:text-sm font-bold font-mono mt-1 ${faultColor}`;
+        }
+
+        // --- UI Cosmetics ---
+        function updateUIState(connected) {
+            isConnected = connected;
             const badge = document.getElementById('connectionBadge');
             const text = document.getElementById('connectionText');
             const btnText = document.getElementById('connectBtnText');
             
-            if (isConnected) {
+            if (connected) {
                 badge.className = "flex items-center space-x-2 px-3.5 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-medium";
                 badge.querySelector('span').className = "w-2 h-2 rounded-full bg-emerald-500 animate-pulse";
-                text.innerText = "STM32 Connected (USART1)";
+                text.innerText = "STM32 Connected Live";
                 btnText.innerText = "Disconnect";
-                startDataStream();
             } else {
                 badge.className = "flex items-center space-x-2 px-3.5 py-1.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-sky-400 text-xs font-medium";
                 badge.querySelector('span').className = "w-2 h-2 rounded-full bg-sky-400";
-                text.innerText = "Disconnected (Simulated)";
+                text.innerText = "Disconnected";
                 btnText.innerText = "Connect STM32";
-                stopDataStream();
             }
-        }
-
-        function startDataStream() {
-            if (animationInterval) clearInterval(animationInterval);
-            animationInterval = setInterval(() => {
-                let normalData = generateNormalSpectrum().map(v => parseFloat((v + (Math.random() * 0.04 - 0.02)).toFixed(3)));
-                normalChart.data.datasets[0].data = normalData;
-                normalChart.update('none');
-
-                let liveData;
-                if (isFaultActive) {
-                    liveData = generateFaultSpectrum().map(v => parseFloat((v + (Math.random() * 0.08 - 0.04)).toFixed(3)));
-                    document.getElementById('valX').innerText = (0.45 + Math.random() * 0.15).toFixed(2) + " g";
-                    document.getElementById('valY').innerText = (-0.32 + Math.random() * 0.12).toFixed(2) + " g";
-                    document.getElementById('valZ').innerText = (0.85 + Math.random() * 0.20).toFixed(2) + " g";
-                    document.getElementById('peakFreqVal').innerText = "35.0 Hz";
-                    document.getElementById('rmsVal').innerText = "0.58 m/s²";
-                } else {
-                    liveData = normalData.map(v => parseFloat((v + (Math.random() * 0.03 - 0.015)).toFixed(3)));
-                    document.getElementById('valX').innerText = (0.02 + Math.random() * 0.02).toFixed(2) + " g";
-                    document.getElementById('valY').innerText = (-0.01 + Math.random() * 0.02).toFixed(2) + " g";
-                    document.getElementById('valZ').innerText = (1.00 + Math.random() * 0.03).toFixed(2) + " g";
-                    document.getElementById('peakFreqVal').innerText = "50.0 Hz";
-                    document.getElementById('rmsVal').innerText = "0.14 m/s²";
-                }
-
-                faultChart.data.datasets[0].data = normalData;
-                faultChart.data.datasets[1].data = liveData;
-                faultChart.update('none');
-
-            }, 250);
-        }
-
-        function stopDataStream() {
-            if (animationInterval) clearInterval(animationInterval);
         }
     </script>
 </body>
